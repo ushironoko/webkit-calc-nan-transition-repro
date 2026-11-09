@@ -1,0 +1,56 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>NaN in top-level calc() + transition</title>
+<style>
+  #container { width: 400px; }
+  #box { width: 100px; height: 20px; background: teal; transition: all 0.2s; }
+  #box.nan { width: calc(50% + var(--n) * 1px); }
+</style>
+<p>Expected: width ends at <code>0px</code> (top-level NaN is censored to 0), at most one transition runs, then events stop.</p>
+<div id="container"><div id="box"></div></div>
+<pre id="log"></pre>
+<script>
+  const box = document.getElementById("box");
+  const log = document.getElementById("log");
+  const guarded = !new URLSearchParams(location.search).has("noguard");
+  const counts = { transitionrun: 0, transitionstart: 0, transitioncancel: 0, transitionend: 0 };
+  let stopped = false;
+
+  const report = (reason) => {
+    log.textContent = [
+      reason,
+      `computed width: ${getComputedStyle(box).width}`,
+      `offsetWidth: ${box.offsetWidth}`,
+      `running animations: ${box.getAnimations().length}`,
+      `events: ${JSON.stringify(counts)}`,
+      `UA: ${navigator.userAgent}`,
+    ].join("\n");
+  };
+
+  const stop = (reason) => {
+    if (stopped) return;
+    stopped = true;
+    report(reason);
+    box.style.transition = "none";
+    box.remove();
+  };
+
+  for (const type of Object.keys(counts)) {
+    box.addEventListener(type, () => {
+      counts[type]++;
+      if (guarded && counts[type] > 50) stop(`FAIL: ${type} fired more than 50 times (transition restart loop)`);
+    });
+  }
+
+  box.style.setProperty("--n", String(Number.NaN));
+  getComputedStyle(box).width;
+  requestAnimationFrame(() => {
+    box.classList.add("nan");
+    setTimeout(() => {
+      if (stopped) return;
+      const ok = getComputedStyle(box).width === "0px" && counts.transitionrun <= 1;
+      report(ok ? "PASS" : "FAIL: width not censored to 0px or extra transitions");
+      stopped = true;
+    }, 1500);
+  });
+</script>

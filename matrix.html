@@ -1,0 +1,138 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>NaN calc() matrix</title>
+<style>
+  body { font: 13px/1.4 -apple-system, system-ui, sans-serif; margin: 16px; }
+  table { border-collapse: collapse; margin-top: 8px; }
+  td, th { border: 1px solid #ccc; padding: 2px 6px; text-align: left; font-family: ui-monospace, monospace; font-size: 12px; }
+  .PASS { background: #dfd; } .FAIL { background: #fdd; } .LOOP { background: #f99; font-weight: bold; }
+  #stage { position: relative; width: 400px; height: 30px; overflow: hidden; }
+  #stage > div { height: 10px; background: teal; }
+</style>
+<h1>Top-level NaN in calc(): censoring and transitions</h1>
+<p>Spec (css-values-4): a top-level calculation producing NaN behaves as 0. Every row is expected to be PASS.</p>
+<p><button id="run">Run all</button> <span id="status"></span></p>
+<p id="crash"></p>
+<div id="stage"></div>
+<table><thead><tr><th>#</th><th>mode</th><th>property</th><th>value</th><th>result</th><th>computed</th><th>offsetWidth</th><th>events run/start/cancel/end</th><th>note</th></tr></thead><tbody id="rows"></tbody></table>
+<pre id="ua"></pre>
+<script>
+  const STORAGE_KEY = "nan-calc-matrix-last-case";
+  const EVENT_LIMIT = 50;
+  const SETTLE_MS = 700;
+  const stage = document.getElementById("stage");
+  const rows = document.getElementById("rows");
+  const status = document.getElementById("status");
+  document.getElementById("ua").textContent = navigator.userAgent;
+
+  const storage = {
+    get: () => { try { return localStorage.getItem(STORAGE_KEY); } catch { return null; } },
+    set: (v) => { try { localStorage.setItem(STORAGE_KEY, v); } catch {} },
+    clear: () => { try { localStorage.removeItem(STORAGE_KEY); } catch {} },
+  };
+
+  const previous = storage.get();
+  if (previous) {
+    document.getElementById("crash").textContent = `Previous run did not finish. Last case started: ${previous}`;
+    document.getElementById("crash").className = "LOOP";
+  }
+
+  const VALUES = [
+    "calc(NaN * 1px)",
+    "calc(0px / 0)",
+    "calc(var(--n) * 1px)",
+    "calc(NaN * 1%)",
+    "calc(50% + NaN * 1px)",
+    "calc(var(--n) * 1%)",
+  ];
+  const PROPS = ["width", "max-width"];
+  const TRANSITIONS = ["all 0.2s", "<prop> 0.2s"];
+  const DIRECTIONS = ["100px → NaN", "NaN → 100px"];
+
+  const cases = [
+    ...PROPS.flatMap((prop) => VALUES.map((value) => ({ mode: "static", prop, value }))),
+    ...PROPS.flatMap((prop) => TRANSITIONS.flatMap((t) => DIRECTIONS.flatMap((dir) =>
+      VALUES.map((value) => ({ mode: `${t.replace("<prop>", prop)} / ${dir}`, transition: t.replace("<prop>", prop), dir, prop, value }))))),
+  ];
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+
+  const makeBox = (c) => {
+    const el = document.createElement("div");
+    el.style.setProperty("--n", String(Number.NaN));
+    if (c.prop === "max-width") el.style.width = "200px";
+    stage.append(el);
+    return el;
+  };
+
+  const measure = (el, c) => ({ computed: getComputedStyle(el).getPropertyValue(c.prop), offsetWidth: el.offsetWidth });
+
+  const runCase = async (c, i) => {
+    storage.set(`#${i} ${c.mode} ${c.prop}: ${c.value}`);
+    const el = makeBox(c);
+    const counts = { transitionrun: 0, transitionstart: 0, transitioncancel: 0, transitionend: 0 };
+    let looped = false;
+    for (const type of Object.keys(counts)) {
+      el.addEventListener(type, () => {
+        counts[type]++;
+        if (counts[type] > EVENT_LIMIT && !looped) {
+          looped = true;
+          el.style.transition = "none";
+        }
+      });
+    }
+
+    const nanFirst = c.dir === "NaN → 100px";
+    const from = nanFirst ? c.value : "100px";
+    const to = nanFirst ? "100px" : c.value;
+    el.style.setProperty(c.prop, c.mode === "static" ? c.value : from);
+    getComputedStyle(el).getPropertyValue(c.prop);
+
+    if (c.mode !== "static") {
+      el.style.transition = c.transition;
+      await frame();
+      el.style.setProperty(c.prop, to);
+      await sleep(SETTLE_MS);
+    }
+
+    const m = measure(el, c);
+    const endsAtNaN = c.mode === "static" || !nanFirst;
+    const expectedComputed = endsAtNaN ? "0px (or 0%)" : "100px";
+    const expectedOffset = endsAtNaN ? 0 : 100;
+    const computedOk = endsAtNaN ? ["0px", "0%"].includes(m.computed) : m.computed === "100px";
+    const extraTransitions = counts.transitionrun > 1;
+    const result = looped ? "LOOP" : (computedOk && m.offsetWidth === expectedOffset && !extraTransitions) ? "PASS" : "FAIL";
+    const note = looped ? `>${EVENT_LIMIT} events, aborted` : result === "FAIL" ? `expected ${expectedComputed} / ${expectedOffset}` : "";
+    el.style.transition = "none";
+    el.remove();
+
+    const tr = document.createElement("tr");
+    tr.className = result;
+    for (const text of [i, c.mode, c.prop, c.value, result, m.computed, m.offsetWidth,
+      `${counts.transitionrun}/${counts.transitionstart}/${counts.transitioncancel}/${counts.transitionend}`, note]) {
+      const td = document.createElement("td");
+      td.textContent = String(text);
+      tr.append(td);
+    }
+    rows.append(tr);
+    return result;
+  };
+
+  const runAll = async () => {
+    rows.textContent = "";
+    const only = new URLSearchParams(location.search).get("case");
+    const selected = only === null ? cases.map((c, i) => [c, i]) : [[cases[Number(only)], Number(only)]];
+    const tally = { PASS: 0, FAIL: 0, LOOP: 0 };
+    for (const [c, i] of selected) {
+      status.textContent = `running #${i} / ${cases.length - 1}`;
+      tally[await runCase(c, i)]++;
+    }
+    storage.clear();
+    status.textContent = `done: ${JSON.stringify(tally)}`;
+    document.title = `done ${JSON.stringify(tally)}`;
+  };
+
+  document.getElementById("run").addEventListener("click", runAll);
+  if (new URLSearchParams(location.search).has("autorun")) runAll();
+</script>
