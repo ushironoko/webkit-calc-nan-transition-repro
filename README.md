@@ -1,5 +1,7 @@
 # WebKit: CSS transition restarts every frame when the target is a calc() mixing percentage and NaN length
 
+Reported as [WebKit Bug 330679](https://bugs.webkit.org/show_bug.cgi?id=330679).
+
 A minimal reproduction for a WebKit bug. When a transitioned `width` or `max-width` changes to a `calc()` that mixes a percentage and a NaN length (for example `calc(50% + NaN * 1px)`), WebKit cancels and restarts the transition on every frame and never finishes it. With `?noguard`, the loop runs forever and the page's memory keeps growing.
 
 ## Live pages
